@@ -1,0 +1,396 @@
+# coding: utf-8 -*-
+
+# For this exercise we have access to a small amount of data (the domain being recent
+# and the data manually annotated, there are few samples).
+#
+# The data is accessible in /lium/buster1/larcher/M2/deep_learning/TP_CNN_UNet/data/.
+#
+# The directory contains a file with 600 training images
+# The directory contains a file with the 600 corresponding masks
+# The directory also contains a file with 70 test images
+# Finally a file with the 70 test masks is available in the same directory
+
+import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader, Dataset
+import numpy as np
+from DeepGeol.deepgeol.unet import UNet
+import matplotlib.pyplot as plt
+import datetime
+import tqdm
+from torch.amp import GradScaler, autocast
+
+PATH_TRAIN = "/lium/buster1/larcher/M2/deep_learning/TP_CNN_UNet/data/training_data.npy"
+PATH_TRAIN_MASKS = "/lium/buster1/larcher/M2/deep_learning/TP_CNN_UNet/data/training_masks.npy"
+PATH_TEST = "/lium/buster1/larcher/M2/deep_learning/TP_CNN_UNet/data/test_data.npy"
+PATH_TEST_MASKS = "/lium/buster1/larcher/M2/deep_learning/TP_CNN_UNet/data/test_masks.npy"
+
+SAVE_MODEL_PATH = "training_data/best_model.pth"
+SAVE_LOG_PATH = "training_data/training.log"
+
+BATCH_SIZE = 32
+SEUIL = 0.3  # Sigmoid threshold to binarize predictions
+TRAIN_VAL_RATIO = 0.9  # Proportion of data used for training vs. validation
+
+
+class GeoDataset(Dataset):
+    """
+    Custom Dataset for geological segmentation data.
+    Images and masks are loaded from .npy files and preprocessed.
+
+    We load everything onto the GPU directly in __init__ because the dataset
+    is small enough to fit entirely in VRAM. This avoids repeated CPU->GPU
+    transfers during training, which would be a bottleneck.
+    """
+    def __init__(self, data_path_x, data_path_masks, device):
+        super(GeoDataset, self).__init__()
+
+        # Load raw numpy arrays from disk
+        self.x = np.load(data_path_x)
+        self.y = np.load(data_path_masks)
+
+        # Convert to float tensors and move directly to GPU
+        # (dataset is small enough to fit entirely in VRAM)
+        self.x = torch.from_numpy(self.x).float().to(device)
+        self.y = torch.from_numpy(self.y).float().to(device)
+
+        # numpy arrays are (N, H, W, C), PyTorch expects (N, C, H, W)
+        self.x = self.x.permute(0, 3, 1, 2)
+        self.y = self.y.permute(0, 3, 1, 2)
+
+        # Convert RGB images to grayscale by averaging channels
+        # The UNet takes a single-channel input
+        self.x = self.x.mean(dim=1, keepdim=True)
+
+    def __len__(self):
+        return len(self.x)
+
+    def __getitem__(self, idx):
+        return self.x[idx], self.y[idx]
+
+
+def load_data(device):
+    """
+    Loads and splits data into train, validation, and test DataLoaders.
+
+    Returns:
+        dataloader_train, dataloader_test, dataloader_val
+    """
+    dataset_train_full = GeoDataset(PATH_TRAIN, PATH_TRAIN_MASKS, device)
+    dataset_test = GeoDataset(PATH_TEST, PATH_TEST_MASKS, device)
+
+    # Split training data into train and validation sets
+    train_set, val_set = torch.utils.data.random_split(
+        dataset_train_full, [TRAIN_VAL_RATIO, 1 - TRAIN_VAL_RATIO]
+    )
+
+    # num_workers=0 is mandatory when data is already on GPU
+    # multiprocessing workers cannot access CUDA tensors from the main process
+    # pin_memory=False is also useless since data is already on GPU
+    dataloader_train = DataLoader(train_set, batch_size=BATCH_SIZE, shuffle=True, num_workers=0, pin_memory=False)
+    dataloader_test = DataLoader(dataset_test, batch_size=BATCH_SIZE, shuffle=False, num_workers=0, pin_memory=False)
+    dataloader_val = DataLoader(val_set, batch_size=BATCH_SIZE, shuffle=False, num_workers=0, pin_memory=False)
+
+    return dataloader_train, dataloader_test, dataloader_val
+
+
+def augment_batch(x, y, n_augments=2):
+    """
+    Creates n augmented versions of each image in the batch.
+    Each version gets a different random combination of flips and rotation.
+
+    x, y : tensors (B, C, H, W) on GPU
+    Returns tensors of shape (B * n_augments, C, H, W)
+    """
+    x_boosted = []
+    y_boosted = []
+
+    for _ in range(n_augments):
+        x_clone = x.clone()
+        y_clone = y.clone()
+
+        if torch.rand(1).item() > 0.5:
+            x_clone = torch.flip(x_clone, dims=[3])
+            y_clone = torch.flip(y_clone, dims=[3])
+
+        if torch.rand(1).item() > 0.5:
+            x_clone = torch.flip(x_clone, dims=[2])
+            y_clone = torch.flip(y_clone, dims=[2])
+
+        k = torch.randint(0, 4, (1,)).item()
+        x_clone = torch.rot90(x_clone, k, dims=[2, 3])
+        y_clone = torch.rot90(y_clone, k, dims=[2, 3])
+
+        x_boosted.append(x_clone)
+        y_boosted.append(y_clone)
+
+    # (B, C, H, W) * n_augments -> (B * n_augments, C, H, W)
+    return torch.cat(x_boosted, dim=0), torch.cat(y_boosted, dim=0)
+
+def write_log(log_filename, config, results):
+    """Appends a training run summary (config + results) to the log file."""
+    with open(log_filename, "a") as f:
+        f.write(f"{'=' * 20} Run: {datetime.datetime.now().strftime('%Y-%m-%d---%Hh%Mm%S')} {'=' * 20}\n")
+        f.write("CONFIGURATION:\n")
+        for key, value in config.items():
+            f.write(f"  - {key}: {value}\n")
+        f.write("\nRESULTS:\n")
+        for key, value in results.items():
+            f.write(f"  - {key}: {value:.8f}\n")
+        f.write("=" * 68 + "\n")
+
+
+def train(dataloader, model, loss_fn, optimizer, scaler):
+    """
+    Runs one full training epoch over the dataloader.
+
+    Uses Automatic Mixed Precision (AMP) to speed up training on GPU:
+    forward pass is computed in float16, reducing memory usage and
+    increasing throughput, while the GradScaler prevents underflow
+    in the backward pass.
+
+    The scaler is passed as a parameter so its internal state
+    persists correctly across epochs.
+
+    Returns:
+        mean training loss over all batches
+    """
+    model.train()
+    losses = []
+
+    for x, y in dataloader:
+        # careful on this function cause it multiplies the batch size
+        # by n_augments which can cause out of memory
+        # with n_augment=2, i created 2 augmented versions of each image,
+        # so the batch size becomes BATCH_SIZE(=32)*2=64
+        # x, y = augment_batch(x, y, n_augments=2)
+        optimizer.zero_grad()
+
+        # AMP: compute forward pass in float16 for speed
+        with autocast('cuda'):
+            output = model(x)
+            loss_value = loss_fn(output, y)
+
+        # Scale gradients to avoid float16 underflow, then backpropagate
+        scaler.scale(loss_value).backward()
+        scaler.step(optimizer)
+        scaler.update()
+
+        losses.append(loss_value.item())
+
+    return np.mean(losses)
+
+
+def evaluate(dataloader, model, loss_fn, device):
+    """
+    Evaluates the model on a given dataloader (validation or test set).
+
+    Computes pixel-wise accuracy, mean loss, Dice F1 score, and jaccard_index.
+    All intermediate computations are kept on GPU to avoid costly
+    CPU transfers at each batch; results are only moved to CPU at the end.
+
+    Returns:
+        accuracy (%), avg_loss, f1, jaccard_index
+    """
+    model.eval()
+    total_loss, num_batches, num_pixels = 0.0, 0, 0
+
+    # Accumulate TP/FP/FN entirely on GPU
+    total_tp = torch.tensor(0, device=device)
+    total_fp = torch.tensor(0, device=device)
+    total_fn = torch.tensor(0, device=device)
+    total_correct = torch.tensor(0, device=device)
+
+    # Assure no gradient calculating during evaluation
+    with torch.no_grad():
+        for x, y in dataloader:
+            pred = model(x)
+            loss_value = loss_fn(pred, y)
+            total_loss += loss_value.item()
+            num_batches += 1
+
+            # Apply sigmoid then threshold to obtain binary mask
+            pred_probs = torch.sigmoid(pred)
+            pred_mask = (pred_probs > SEUIL).long()
+            y_true = y.long()
+
+            total_tp += torch.logical_and(pred_mask == 1, y_true == 1).sum()
+            total_fp += torch.logical_and(pred_mask == 1, y_true == 0).sum()
+            total_fn += torch.logical_and(pred_mask == 0, y_true == 1).sum()
+            total_correct += (pred_mask == y_true).sum()
+            num_pixels += torch.numel(pred_mask)
+
+    # Compute global metrics...
+    # Move results to CPU only once, at the end of the loop
+    avg_loss = total_loss / num_batches if num_batches > 0 else 0.0
+    accuracy = (total_correct.item() / num_pixels) * 100 if num_pixels > 0 else 0.0
+
+    tp = total_tp.item()
+    fp = total_fp.item()
+    fn = total_fn.item()
+
+    # F1: mean of precision and recall
+    dice_denom = 2 * tp + fp + fn
+    f1 = (2 * tp) / dice_denom if dice_denom > 0 else 0.0
+
+    # jaccard_index (IoU / Intersection over Union): standard metric
+    # for segmentation tasks.More informative than pixel accuracy
+    # on imbalanced datasets
+    iou_denom = tp + fp + fn
+    jaccard_index = tp / iou_denom if iou_denom > 0 else 0.0
+
+    return accuracy, avg_loss, f1, jaccard_index
+
+
+def train_loop(epochs=10, device=None):
+    """
+    Full training pipeline: data loading, model init, training loop,
+    early stopping, curve visualization, and logging.
+
+    Args:
+        epochs: maximum number of training epochs
+        device: torch device string ('cuda' or 'cpu'). Auto-detected if None.
+
+    Returns:
+        trained model
+    """
+    if device is None:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"Using {'GPU' if device == 'cuda' else 'CPU'} device")
+
+    # Number of epochs without improvement before stopping training
+    patience = 5
+
+    dataloader_train, _, dataloader_val = load_data(device)
+
+    # Smaller hidden_channels than the original UNet default [64,128,256,512,1024]
+    # With only 600 training images, a lighter model reduces overfitting risk
+    # and is much faster to train (fewer params to compute)
+    model = UNet(
+        hidden_channels=[32, 64, 128, 256, 512],
+        batch_norm=True,
+        dropout=False,
+        bilinear=False
+    ).to(device)
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
+    scheduler = None
+    # scheduler = torch.optim.lr_scheduler.StepLR(optimizer, gamma=0.5, step_size=5)
+
+    # pos_weight penalizes false negatives more heavily to handle class imbalance:
+    # geological structures occupy a small fraction of each image
+    pos_weight = torch.tensor([4.0]).to(device)
+    loss_fn = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+
+    # GradScaler must be created once and reused across epochs so that its
+    # internal loss scale factor can adapt progressively during training
+    scaler = GradScaler('cuda')
+
+    training_loss = []
+    validation_loss = []
+    best_metrics = {"loss": float("inf"), "acc": 0.0, "f1": 0.0, "jaccard_index": 0.0}
+    patience_count = 0
+    early_stopping = False
+
+    for e in tqdm.tqdm(range(epochs), desc="Training Progress", unit="epoch"):
+
+        avg_train_loss = train(dataloader_train, model, loss_fn, optimizer, scaler)
+        training_loss.append(avg_train_loss)
+
+        acc, avg_val_loss, f1, jaccard_index = evaluate(dataloader_val, model, loss_fn, device)
+        validation_loss.append(avg_val_loss)
+
+        if scheduler is not None:
+            scheduler.step()
+
+        # Save the model whenever validation loss improves (early stopping)
+        if avg_val_loss < best_metrics["loss"]:
+            best_metrics = {"loss": avg_val_loss, "acc": acc, "f1": f1, "jaccard_index": jaccard_index}
+            patience_count = 0
+            torch.save(model.state_dict(), SAVE_MODEL_PATH)
+        else:
+            patience_count += 1
+
+        if patience_count >= patience:
+            early_stopping = True
+            print(f"Early stopping triggered at epoch {e + 1}")
+            break
+
+    # reload the best weights before returning
+    model.load_state_dict(torch.load(SAVE_MODEL_PATH))
+
+    # Plot training vs validation loss curves to visualize convergence
+    plt.figure()
+    plt.plot(training_loss, label="Training Loss")
+    plt.plot(validation_loss, label="Validation Loss")
+    plt.title("Training vs Validation Loss")
+    plt.xlabel("Epochs")
+    plt.ylabel("Loss")
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
+
+    # Write into the log file to summary the run
+    write_log(SAVE_LOG_PATH, config={
+        "Model": model.__class__.__name__,
+        "Hidden channels": model.hidden_channels,
+        "Bilinear": model.bilinear,
+        "Batch norm": model.batch_norm,
+        "Dropout": model.dropout,
+        "Sigmoid threshold": SEUIL,
+        "Epochs": epochs,
+        "Batch size": BATCH_SIZE,
+        "Train ratio": TRAIN_VAL_RATIO,
+        "Optimizer": optimizer.__class__.__name__,
+        "Scheduler": scheduler.__class__.__name__ if scheduler is not None else "None",
+        "Learning rate": optimizer.param_groups[0]["lr"],
+        "Loss function": loss_fn.__class__.__name__,
+        "pos_weight": pos_weight.item(),
+        "Patience": patience,
+    }, results={
+        "Early stopping": early_stopping,
+        "Best validation loss": best_metrics["loss"],
+        "Best validation acc": best_metrics["acc"],
+        "Best validation F1": best_metrics["f1"],
+        "Best validation Jaccard Index": best_metrics["jaccard_index"],
+    })
+
+    return model
+
+
+def test(model, device=None):
+    """
+    Evaluates the model on the held-out test set and prints final metrics.
+
+    Args:
+        model: trained UNet model
+        device: the device to run the evaluation
+
+    Returns:
+        accuracy (%), test_loss, f1, jaccard_index
+    """
+    if device is None:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"Using {'GPU' if device == 'cuda' else 'CPU'} device")
+
+    _, dataloader_test, _ = load_data(device)
+
+    # Use the same loss (with pos_weight) as during training for consistency
+    pos_weight = torch.tensor([4.0]).to(device)
+    loss_fn = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+
+    accuracy, test_loss, f1, jaccard_index = evaluate(dataloader_test, model, loss_fn, device)
+
+    print(
+        f"Test metrics : \n"
+        f"  Accuracy: {accuracy:.2f}%\n"
+        f"  Loss: {test_loss:.6f}\n"
+        f"  F1: {f1:.4f}\n"
+        f"  Jaccard Index: {jaccard_index:.4f}"
+    )
+    return accuracy, test_loss, f1, jaccard_index
+
+
+if __name__ == "__main__":
+    trained_model = train_loop(epochs=50)
+    accuracy, loss, f1, jaccard_index = test(trained_model)
