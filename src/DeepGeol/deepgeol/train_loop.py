@@ -14,29 +14,35 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
 import numpy as np
-from DeepGeol.deepgeol.unet import UNet
 import matplotlib.pyplot as plt
-import datetime
 import tqdm
 from torch.amp import GradScaler, autocast
+import os
+import time
 
+from DeepGeol.deepgeol.unet import UNet
+from DeepGeol.deepgeol.utils import create_run_log
+
+#================================================
+# Constants for simplicty
+#================================================
 PATH_TRAIN_DEMO = "/lium/buster1/larcher/M2/deep_learning/TP_CNN_UNet/data/training_data.npy"
 PATH_TRAIN_MASKS_DEMO = "/lium/buster1/larcher/M2/deep_learning/TP_CNN_UNet/data/training_masks.npy"
 PATH_TEST_DEMO = "/lium/buster1/larcher/M2/deep_learning/TP_CNN_UNet/data/test_data.npy"
 PATH_TEST_MASKS_DEMO = "/lium/buster1/larcher/M2/deep_learning/TP_CNN_UNet/data/test_masks.npy"
 
-SAVE_MODEL_PATH = "training_data/best_model.pth"
-SAVE_LOG_PATH = "training_data/training.log"
-
-
-PATH_DATA_ORIGINAL = "/lium/buster1/larcher/data/geology/s2data/ArdicDEM/"
-PATH_MASK_ORIGINAL = "/lium/buster1/larcher/data/geology/masks/"
+SAVE_LOG_PATH = "log/"
+SAVE_MODEL_PATH = os.path.join(SAVE_LOG_PATH, "best_model.pth")
 
 BATCH_SIZE = 64
 SEUIL = 0.3  # Sigmoid threshold to binarize predictions
 TRAIN_VAL_RATIO = 0.9  # Proportion of data used for training vs. validation
 
+FILE_NAME_FOR_LOG = os.path.basename(__file__)
 
+#================================================
+# preprocessing
+#================================================
 class GeoDataset(Dataset):
    """
    Custom Dataset for geological segmentation data.
@@ -91,20 +97,9 @@ def load_data():
 
    return dataloader_train, dataloader_test, dataloader_val
 
-
-def write_log(log_filename, config, results):
-    """Appends a training run summary (config + results) to the log file."""
-    with open(log_filename, "a") as f:
-        f.write(f"{'=' * 20} Run: {datetime.datetime.now().strftime('%Y-%m-%d---%Hh%Mm%S')} {'=' * 20}\n")
-        f.write("CONFIGURATION:\n")
-        for key, value in config.items():
-            f.write(f"  - {key}: {value}\n")
-        f.write("\nRESULTS:\n")
-        for key, value in results.items():
-            f.write(f"  - {key}: {value:.8f}\n")
-        f.write("=" * 68 + "\n")
-
-
+#================================================
+# Main functions for training and evaluation
+#================================================
 def train(dataloader, model, loss_fn, optimizer, scaler, device):
     """
     Runs one full training epoch over the dataloader.
@@ -218,10 +213,10 @@ def train_loop(epochs=10, device=None):
     """
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"Using {'GPU' if device == 'cuda' else 'CPU'} device")
+    print(f"[{FILE_NAME_FOR_LOG}] Using {'GPU' if device == 'cuda' else 'CPU'} device")
 
     # Number of epochs without improvement before stopping training
-    patience = 5
+    patience = 8
 
     dataloader_train, _, dataloader_val = load_data()
 
@@ -232,7 +227,8 @@ def train_loop(epochs=10, device=None):
         hidden_channels=[32, 64, 128, 256, 512],
         batch_norm=True,
         dropout=False,
-        bilinear=False
+        bilinear=False,
+        attention=True
     ).to(device)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
@@ -253,6 +249,9 @@ def train_loop(epochs=10, device=None):
     best_metrics = {"loss": float("inf"), "acc": 0.0, "f1": 0.0, "jaccard_index": 0.0}
     patience_count = 0
     early_stopping = False
+    early_stopping_value = -1
+
+    start_time = time.time()
 
     for e in tqdm.tqdm(range(epochs), desc="Training Progress", unit="epoch"):
 
@@ -269,14 +268,18 @@ def train_loop(epochs=10, device=None):
         if avg_val_loss < best_metrics["loss"]:
             best_metrics = {"loss": avg_val_loss, "acc": acc, "f1": f1, "jaccard_index": jaccard_index}
             patience_count = 0
+            os.makedirs(SAVE_LOG_PATH, exist_ok=True)
             torch.save(model.state_dict(), SAVE_MODEL_PATH)
         else:
             patience_count += 1
 
         if patience_count >= patience:
             early_stopping = True
-            print(f"Early stopping triggered at epoch {e + 1}")
+            early_stopping_value = e+1
+            print(f"[{FILE_NAME_FOR_LOG}] Early stopping triggered at epoch {e + 1}")
             break
+
+    end_time = time.time()
 
     # reload the best weights before returning
     model.load_state_dict(torch.load(SAVE_MODEL_PATH))
@@ -292,30 +295,44 @@ def train_loop(epochs=10, device=None):
     plt.tight_layout()
     plt.show()
 
-    # Write into the log file to summary the run
-    write_log(SAVE_LOG_PATH, config={
-        "Model": model.__class__.__name__,
-        "Hidden channels": model.hidden_channels,
-        "Bilinear": model.bilinear,
-        "Batch norm": model.batch_norm,
-        "Dropout": model.dropout,
-        "Sigmoid threshold": SEUIL,
-        "Epochs": epochs,
-        "Batch size": BATCH_SIZE,
-        "Train ratio": TRAIN_VAL_RATIO,
-        "Optimizer": optimizer.__class__.__name__,
-        "Scheduler": scheduler.__class__.__name__ if scheduler is not None else "None",
-        "Learning rate": optimizer.param_groups[0]["lr"],
-        "Loss function": loss_fn.__class__.__name__,
-        "pos_weight": pos_weight.item(),
-        "Patience": patience,
-    }, results={
-        "Early stopping": early_stopping,
-        "Best validation loss": best_metrics["loss"],
-        "Best validation acc": best_metrics["acc"],
-        "Best validation F1": best_metrics["f1"],
-        "Best validation Jaccard Index": best_metrics["jaccard_index"],
-    })
+    run_dir = create_run_log(
+        base_log_dir=SAVE_LOG_PATH,
+        model=model,
+        config={
+            "Model": model.__class__.__name__,
+            "Hidden channels": model.hidden_channels,
+            "Bilinear": model.bilinear,
+            "Batch norm": model.batch_norm,
+            "Dropout": model.dropout,
+            "Attention": model.attention,
+            "Sigmoid threshold": SEUIL,
+            "Epochs": epochs,
+            "Batch size": BATCH_SIZE,
+            "Train ratio": TRAIN_VAL_RATIO,
+            "Optimizer": optimizer.__class__.__name__,
+            "Scheduler": scheduler.__class__.__name__ if scheduler is not None else "None",
+            "Learning rate": optimizer.param_groups[0]["lr"],
+            "Loss function": loss_fn.__class__.__name__,
+            "pos_weight": pos_weight.item(),
+            "Patience": patience,
+        },
+        results={
+            "Early stopping ": early_stopping,
+            "Early stopping epoch": early_stopping_value,
+            "Best validation loss": best_metrics["loss"],
+            "Best validation acc": best_metrics["acc"],
+            "Best validation F1": best_metrics["f1"],
+            "Best validation Jaccard Index": best_metrics["jaccard_index"],
+        },
+        training_loss=training_loss,
+        validation_loss=validation_loss,
+        run_duration=(end_time - start_time),
+    )
+
+    temp_path = os.path.join(run_dir, "final_model.pth")
+    torch.save(model.state_dict(), temp_path)
+    os.remove(SAVE_MODEL_PATH)
+    print(f"[{FILE_NAME_FOR_LOG}] Final model saved at {temp_path}")
 
     return model
 
@@ -333,7 +350,7 @@ def test(model, device=None):
     """
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"Using {'GPU' if device == 'cuda' else 'CPU'} device")
+    print(f"[{FILE_NAME_FOR_LOG}] Using {'GPU' if device == 'cuda' else 'CPU'} device")
 
     _, dataloader_test, _ = load_data()
 
@@ -344,7 +361,7 @@ def test(model, device=None):
     accuracy, test_loss, f1, jaccard_index = evaluate(dataloader_test, model, loss_fn, device)
 
     print(
-        f"Test metrics : \n"
+        f"[{FILE_NAME_FOR_LOG}] Test metrics : \n"
         f"  Accuracy: {accuracy:.2f}%\n"
         f"  Loss: {test_loss:.6f}\n"
         f"  F1: {f1:.4f}\n"
@@ -352,7 +369,10 @@ def test(model, device=None):
     )
     return accuracy, test_loss, f1, jaccard_index
 
-
+#================================================
+# Main execution
+#================================================
 if __name__ == "__main__":
+    print(f"[{FILE_NAME_FOR_LOG}] Starting training loop...")
     trained_model = train_loop(epochs=50)
     accuracy, loss, f1, jaccard_index = test(trained_model)

@@ -35,6 +35,7 @@ from .unet_parts import DoubleConv
 from .unet_parts import Down2C
 from .unet_parts import Up2C
 from .unet_parts import OutConv
+from .unet_parts import ASPP
 
 
 
@@ -56,7 +57,9 @@ class UNet(torch.nn.Module):
                  n_classes=1,
                  dropout=False,
                  batch_norm=False,
-                 bilinear=True):
+                 bilinear=True,
+                 attention=False
+        ):
         super(UNet, self).__init__()
 
         self.input_channels = input_channels
@@ -66,11 +69,12 @@ class UNet(torch.nn.Module):
         self.batch_norm = batch_norm
         self.bilinear = bilinear
         self.innput_conv = None
+        self.attention = attention
 
         # We use a DoubleConv block before going down
         self.inc = DoubleConv(input_channels, hidden_channels[0], dropout=dropout, batch_norm=batch_norm)
 
-        # Add Down blocks
+        # Encoder (Down)
         # 64 -> 128
         self.down0 = Down2C(hidden_channels[0], hidden_channels[1], dropout=dropout, batch_norm=batch_norm)
         # 128 -> 256
@@ -80,20 +84,22 @@ class UNet(torch.nn.Module):
         # 512 -> 1024
         self.down3 = Down2C(hidden_channels[3], hidden_channels[4], dropout=dropout, batch_norm=batch_norm)
 
+        self.aspp = ASPP(in_channels=hidden_channels[4], mid_channels=hidden_channels[4])
+
         # Decoder (Up)
         # On passe (Input venant du bas, Input venant du skip/Sortie voulue)
 
         # up0 prend down3 (1024) et skip down2 (512)
-        self.up0 = Up2C(hidden_channels[4], hidden_channels[3], bilinear=bilinear)
+        self.up0 = Up2C(hidden_channels[4], hidden_channels[3], bilinear=bilinear, attention=attention)
 
         # up1 prend up0 (512) et skip down1 (256)
-        self.up1 = Up2C(hidden_channels[3], hidden_channels[2], bilinear=bilinear)
+        self.up1 = Up2C(hidden_channels[3], hidden_channels[2], bilinear=bilinear, attention=attention)
 
         # up2 prend up1 (256) et skip down0 (128)
-        self.up2 = Up2C(hidden_channels[2], hidden_channels[1], bilinear=bilinear)
+        self.up2 = Up2C(hidden_channels[2], hidden_channels[1], bilinear=bilinear, attention=attention)
 
         # up3 prend up2 (128) et skip inc (64)
-        self.up3 = Up2C(hidden_channels[1], hidden_channels[0], bilinear=bilinear)
+        self.up3 = Up2C(hidden_channels[1], hidden_channels[0], bilinear=bilinear, attention=attention)
 
         self.outc = OutConv(hidden_channels[0], n_classes)
         # self.sigmoid = torch.nn.Sigmoid()
@@ -108,6 +114,9 @@ class UNet(torch.nn.Module):
         down_outputs.append(self.down1(down_outputs[-1]))
         down_outputs.append(self.down2(down_outputs[-1]))
         down_outputs.append(self.down3(down_outputs[-1]))
+
+        # Apply ASPP on the bottleneck
+        down_outputs[-1] = self.aspp(down_outputs[-1])
 
         x = self.up0(down_outputs[-1], down_outputs[-2])
         x = self.up1(x, down_outputs[-3])
