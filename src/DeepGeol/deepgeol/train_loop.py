@@ -20,112 +20,77 @@ import datetime
 import tqdm
 from torch.amp import GradScaler, autocast
 
-PATH_TRAIN = "/lium/buster1/larcher/M2/deep_learning/TP_CNN_UNet/data/training_data.npy"
-PATH_TRAIN_MASKS = "/lium/buster1/larcher/M2/deep_learning/TP_CNN_UNet/data/training_masks.npy"
-PATH_TEST = "/lium/buster1/larcher/M2/deep_learning/TP_CNN_UNet/data/test_data.npy"
-PATH_TEST_MASKS = "/lium/buster1/larcher/M2/deep_learning/TP_CNN_UNet/data/test_masks.npy"
+PATH_TRAIN_DEMO = "/lium/buster1/larcher/M2/deep_learning/TP_CNN_UNet/data/training_data.npy"
+PATH_TRAIN_MASKS_DEMO = "/lium/buster1/larcher/M2/deep_learning/TP_CNN_UNet/data/training_masks.npy"
+PATH_TEST_DEMO = "/lium/buster1/larcher/M2/deep_learning/TP_CNN_UNet/data/test_data.npy"
+PATH_TEST_MASKS_DEMO = "/lium/buster1/larcher/M2/deep_learning/TP_CNN_UNet/data/test_masks.npy"
 
 SAVE_MODEL_PATH = "training_data/best_model.pth"
 SAVE_LOG_PATH = "training_data/training.log"
 
-BATCH_SIZE = 32
+
+PATH_DATA_ORIGINAL = "/lium/buster1/larcher/data/geology/s2data/ArdicDEM/"
+PATH_MASK_ORIGINAL = "/lium/buster1/larcher/data/geology/masks/"
+
+BATCH_SIZE = 64
 SEUIL = 0.3  # Sigmoid threshold to binarize predictions
 TRAIN_VAL_RATIO = 0.9  # Proportion of data used for training vs. validation
 
 
 class GeoDataset(Dataset):
-    """
-    Custom Dataset for geological segmentation data.
-    Images and masks are loaded from .npy files and preprocessed.
+   """
+   Custom Dataset for geological segmentation data.
+   Images and masks are loaded from .npy files and preprocessed.
 
-    We load everything onto the GPU directly in __init__ because the dataset
-    is small enough to fit entirely in VRAM. This avoids repeated CPU->GPU
-    transfers during training, which would be a bottleneck.
-    """
-    def __init__(self, data_path_x, data_path_masks, device):
-        super(GeoDataset, self).__init__()
+   """
+   def __init__(self, data_path_x, data_path_masks):
+       super(GeoDataset, self).__init__()
 
-        # Load raw numpy arrays from disk
-        self.x = np.load(data_path_x)
-        self.y = np.load(data_path_masks)
+       # Load raw numpy arrays from disk
+       self.x = np.load(data_path_x)
+       self.y = np.load(data_path_masks)
 
-        # Convert to float tensors and move directly to GPU
-        # (dataset is small enough to fit entirely in VRAM)
-        self.x = torch.from_numpy(self.x).float().to(device)
-        self.y = torch.from_numpy(self.y).float().to(device)
+       # Convert to float tensors and move directly to GPU
+       # (dataset is small enough to fit entirely in VRAM)
+       self.x = torch.from_numpy(self.x).float()
+       self.y = torch.from_numpy(self.y).float()
 
-        # numpy arrays are (N, H, W, C), PyTorch expects (N, C, H, W)
-        self.x = self.x.permute(0, 3, 1, 2)
-        self.y = self.y.permute(0, 3, 1, 2)
+       # numpy arrays are (N, H, W, C), PyTorch expects (N, C, H, W)
+       self.x = self.x.permute(0, 3, 1, 2)
+       self.y = self.y.permute(0, 3, 1, 2)
 
-        # Convert RGB images to grayscale by averaging channels
-        # The UNet takes a single-channel input
-        self.x = self.x.mean(dim=1, keepdim=True)
+       # Convert RGB images to grayscale by averaging channels
+       # The UNet takes a single-channel input
+       self.x = self.x.mean(dim=1, keepdim=True)
 
-    def __len__(self):
-        return len(self.x)
+   def __len__(self):
+       return len(self.x)
 
-    def __getitem__(self, idx):
+   def __getitem__(self, idx):
         return self.x[idx], self.y[idx]
 
 
-def load_data(device):
-    """
-    Loads and splits data into train, validation, and test DataLoaders.
+def load_data():
+   """
+   Loads and splits data into train, validation, and test DataLoaders.
 
-    Returns:
-        dataloader_train, dataloader_test, dataloader_val
-    """
-    dataset_train_full = GeoDataset(PATH_TRAIN, PATH_TRAIN_MASKS, device)
-    dataset_test = GeoDataset(PATH_TEST, PATH_TEST_MASKS, device)
+   Returns:
+       dataloader_train, dataloader_test, dataloader_val
+   """
+   dataset_train_full = GeoDataset(PATH_TRAIN_DEMO, PATH_TRAIN_MASKS_DEMO)
+   dataset_test = GeoDataset(PATH_TEST_DEMO, PATH_TEST_MASKS_DEMO)
 
-    # Split training data into train and validation sets
-    train_set, val_set = torch.utils.data.random_split(
-        dataset_train_full, [TRAIN_VAL_RATIO, 1 - TRAIN_VAL_RATIO]
-    )
+   # Split training data into train and validation sets
+   train_set, val_set = torch.utils.data.random_split(
+       dataset_train_full, [TRAIN_VAL_RATIO, 1 - TRAIN_VAL_RATIO]
+   )
 
-    # num_workers=0 is mandatory when data is already on GPU
-    # multiprocessing workers cannot access CUDA tensors from the main process
-    # pin_memory=False is also useless since data is already on GPU
-    dataloader_train = DataLoader(train_set, batch_size=BATCH_SIZE, shuffle=True, num_workers=0, pin_memory=False)
-    dataloader_test = DataLoader(dataset_test, batch_size=BATCH_SIZE, shuffle=False, num_workers=0, pin_memory=False)
-    dataloader_val = DataLoader(val_set, batch_size=BATCH_SIZE, shuffle=False, num_workers=0, pin_memory=False)
+   dataloader_train = DataLoader(train_set, batch_size=BATCH_SIZE, shuffle=True, num_workers=0, pin_memory=True)
+   dataloader_test = DataLoader(dataset_test, batch_size=BATCH_SIZE, shuffle=False, num_workers=0, pin_memory=True)
+   dataloader_val = DataLoader(val_set, batch_size=BATCH_SIZE, shuffle=False, num_workers=0, pin_memory=True)
 
-    return dataloader_train, dataloader_test, dataloader_val
+   return dataloader_train, dataloader_test, dataloader_val
 
-
-def augment_batch(x, y, n_augments=2):
-    """
-    Creates n augmented versions of each image in the batch.
-    Each version gets a different random combination of flips and rotation.
-
-    x, y : tensors (B, C, H, W) on GPU
-    Returns tensors of shape (B * n_augments, C, H, W)
-    """
-    x_boosted = []
-    y_boosted = []
-
-    for _ in range(n_augments):
-        x_clone = x.clone()
-        y_clone = y.clone()
-
-        if torch.rand(1).item() > 0.5:
-            x_clone = torch.flip(x_clone, dims=[3])
-            y_clone = torch.flip(y_clone, dims=[3])
-
-        if torch.rand(1).item() > 0.5:
-            x_clone = torch.flip(x_clone, dims=[2])
-            y_clone = torch.flip(y_clone, dims=[2])
-
-        k = torch.randint(0, 4, (1,)).item()
-        x_clone = torch.rot90(x_clone, k, dims=[2, 3])
-        y_clone = torch.rot90(y_clone, k, dims=[2, 3])
-
-        x_boosted.append(x_clone)
-        y_boosted.append(y_clone)
-
-    # (B, C, H, W) * n_augments -> (B * n_augments, C, H, W)
-    return torch.cat(x_boosted, dim=0), torch.cat(y_boosted, dim=0)
 
 def write_log(log_filename, config, results):
     """Appends a training run summary (config + results) to the log file."""
@@ -140,7 +105,7 @@ def write_log(log_filename, config, results):
         f.write("=" * 68 + "\n")
 
 
-def train(dataloader, model, loss_fn, optimizer, scaler):
+def train(dataloader, model, loss_fn, optimizer, scaler, device):
     """
     Runs one full training epoch over the dataloader.
 
@@ -159,11 +124,7 @@ def train(dataloader, model, loss_fn, optimizer, scaler):
     losses = []
 
     for x, y in dataloader:
-        # careful on this function cause it multiplies the batch size
-        # by n_augments which can cause out of memory
-        # with n_augment=2, i created 2 augmented versions of each image,
-        # so the batch size becomes BATCH_SIZE(=32)*2=64
-        # x, y = augment_batch(x, y, n_augments=2)
+        x, y = x.to(device), y.to(device)
         optimizer.zero_grad()
 
         # AMP: compute forward pass in float16 for speed
@@ -204,6 +165,7 @@ def evaluate(dataloader, model, loss_fn, device):
     # Assure no gradient calculating during evaluation
     with torch.no_grad():
         for x, y in dataloader:
+            x, y = x.to(device), y.to(device)
             pred = model(x)
             loss_value = loss_fn(pred, y)
             total_loss += loss_value.item()
@@ -230,8 +192,8 @@ def evaluate(dataloader, model, loss_fn, device):
     fn = total_fn.item()
 
     # F1: mean of precision and recall
-    dice_denom = 2 * tp + fp + fn
-    f1 = (2 * tp) / dice_denom if dice_denom > 0 else 0.0
+    denom = 2 * tp + fp + fn
+    f1 = (2 * tp) / denom if denom > 0 else 0.0
 
     # jaccard_index (IoU / Intersection over Union): standard metric
     # for segmentation tasks.More informative than pixel accuracy
@@ -261,7 +223,7 @@ def train_loop(epochs=10, device=None):
     # Number of epochs without improvement before stopping training
     patience = 5
 
-    dataloader_train, _, dataloader_val = load_data(device)
+    dataloader_train, _, dataloader_val = load_data()
 
     # Smaller hidden_channels than the original UNet default [64,128,256,512,1024]
     # With only 600 training images, a lighter model reduces overfitting risk
@@ -294,7 +256,7 @@ def train_loop(epochs=10, device=None):
 
     for e in tqdm.tqdm(range(epochs), desc="Training Progress", unit="epoch"):
 
-        avg_train_loss = train(dataloader_train, model, loss_fn, optimizer, scaler)
+        avg_train_loss = train(dataloader_train, model, loss_fn, optimizer, scaler, device)
         training_loss.append(avg_train_loss)
 
         acc, avg_val_loss, f1, jaccard_index = evaluate(dataloader_val, model, loss_fn, device)
@@ -373,7 +335,7 @@ def test(model, device=None):
         device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using {'GPU' if device == 'cuda' else 'CPU'} device")
 
-    _, dataloader_test, _ = load_data(device)
+    _, dataloader_test, _ = load_data()
 
     # Use the same loss (with pos_weight) as during training for consistency
     pos_weight = torch.tensor([4.0]).to(device)
