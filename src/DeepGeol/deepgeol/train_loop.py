@@ -21,7 +21,7 @@ import os
 import time
 
 from DeepGeol.deepgeol.unet import UNet
-from DeepGeol.deepgeol.utils as utils
+import DeepGeol.deepgeol.utils as utils
 from DeepGeol.deepgeol.geoutil import GeoSet, get_crop_list
 
 #================================================
