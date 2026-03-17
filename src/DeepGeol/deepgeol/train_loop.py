@@ -21,22 +21,21 @@ import os
 import time
 
 from DeepGeol.deepgeol.unet import UNet
-from DeepGeol.deepgeol.utils import create_run_log
+from DeepGeol.deepgeol.utils as utils
+from DeepGeol.deepgeol.geoutil import GeoSet, get_crop_list
 
 #================================================
 # Constants for simplicty
 #================================================
-PATH_TRAIN_DEMO = "/lium/buster1/larcher/M2/deep_learning/TP_CNN_UNet/data/training_data.npy"
-PATH_TRAIN_MASKS_DEMO = "/lium/buster1/larcher/M2/deep_learning/TP_CNN_UNet/data/training_masks.npy"
-PATH_TEST_DEMO = "/lium/buster1/larcher/M2/deep_learning/TP_CNN_UNet/data/test_data.npy"
-PATH_TEST_MASKS_DEMO = "/lium/buster1/larcher/M2/deep_learning/TP_CNN_UNet/data/test_masks.npy"
-
-SAVE_LOG_PATH = "log/"
-SAVE_MODEL_PATH = os.path.join(SAVE_LOG_PATH, "best_model.pth")
 
 BATCH_SIZE = 64
 SEUIL = 0.3  # Sigmoid threshold to binarize predictions
 TRAIN_VAL_RATIO = 0.9  # Proportion of data used for training vs. validation
+
+PATH_DATA_ORIGINAL  = "/projects/m26043/data/ArticDEM/"
+PATH_MASK_ORIGINAL  = "/projects/m26043/data/masks/"
+WINDOW_SIZE         = 256   # taille des patches extraits (doit correspondre à l'entrée du UNet)
+STRIDE              = 128   # chevauchement entre patches (128 = 50% overlap)
 
 FILE_NAME_FOR_LOG = os.path.basename(__file__)
 
@@ -83,8 +82,8 @@ def load_data():
    Returns:
        dataloader_train, dataloader_test, dataloader_val
    """
-   dataset_train_full = GeoDataset(PATH_TRAIN_DEMO, PATH_TRAIN_MASKS_DEMO)
-   dataset_test = GeoDataset(PATH_TEST_DEMO, PATH_TEST_MASKS_DEMO)
+   dataset_train_full = GeoDataset(utils.PATH_TRAIN_DEMO, utils.PATH_TRAIN_MASKS_DEMO)
+   dataset_test = GeoDataset(utils.PATH_TEST_DEMO, utils.PATH_TEST_MASKS_DEMO)
 
    # Split training data into train and validation sets
    train_set, val_set = torch.utils.data.random_split(
@@ -96,6 +95,50 @@ def load_data():
    dataloader_val = DataLoader(val_set, batch_size=BATCH_SIZE, shuffle=False, num_workers=0, pin_memory=True)
 
    return dataloader_train, dataloader_test, dataloader_val
+
+def load_data_tif():
+    """
+    Loads training, validation and test DataLoaders from .tif files.
+    Uses get_crop_list to enumerate all possible patches from the large images,
+    then GeoSet to load each patch on the fly with rasterio (no full image in RAM).
+
+    The 'safe_split' mode ensures train/val/test sets come from different spatial
+    regions of each image — avoids data leakage due to overlapping patches.
+
+    Returns:
+        dataloader_train, dataloader_test, dataloader_val
+    """
+    # Build the list of all extractable patches per split
+    # safe_split : each image is cut spatially so train/val/test don't overlap
+    training_df, validation_df, dev_df = get_crop_list(
+        data_path=PATH_DATA_ORIGINAL,
+        mask_path=PATH_MASK_ORIGINAL,
+        window_size=(WINDOW_SIZE, WINDOW_SIZE),
+        stride=(STRIDE, STRIDE),
+        train_val_dev=(0.8, 0.1, 0.1),
+        splitting_mode='safe_split',
+        crop_mode='vertical'
+    )
+
+    # Reset index so GeoSet can access rows by integer index
+    training_df = training_df.reset_index(drop=True)
+    validation_df = validation_df.reset_index(drop=True)
+    dev_df = dev_df.reset_index(drop=True)
+
+    dataset_train = GeoSet(training_df, PATH_DATA_ORIGINAL, PATH_MASK_ORIGINAL, WINDOW_SIZE)
+    dataset_val = GeoSet(validation_df, PATH_DATA_ORIGINAL, PATH_MASK_ORIGINAL, WINDOW_SIZE)
+    dataset_test = GeoSet(dev_df, PATH_DATA_ORIGINAL, PATH_MASK_ORIGINAL, WINDOW_SIZE)
+
+    # num_workers > 0 is now safe: data is loaded from disk on CPU, not stored on GPU
+    # pin_memory=True speeds up the CPU→GPU transfer in the training loop
+    dataloader_train = DataLoader(dataset_train, batch_size=BATCH_SIZE, shuffle=True,
+                                  num_workers=4, pin_memory=True)
+    dataloader_val = DataLoader(dataset_val,   batch_size=BATCH_SIZE, shuffle=False,
+                                  num_workers=4, pin_memory=True)
+    dataloader_test = DataLoader(dataset_test,  batch_size=BATCH_SIZE, shuffle=False,
+                                  num_workers=4, pin_memory=True)
+
+    return dataloader_train, dataloader_test, dataloader_val
 
 #================================================
 # Main functions for training and evaluation
@@ -268,8 +311,8 @@ def train_loop(epochs=10, device=None):
         if avg_val_loss < best_metrics["loss"]:
             best_metrics = {"loss": avg_val_loss, "acc": acc, "f1": f1, "jaccard_index": jaccard_index}
             patience_count = 0
-            os.makedirs(SAVE_LOG_PATH, exist_ok=True)
-            torch.save(model.state_dict(), SAVE_MODEL_PATH)
+            os.makedirs(utils.SAVE_LOG_PATH, exist_ok=True)
+            torch.save(model.state_dict(), utils.SAVE_MODEL_PATH)
         else:
             patience_count += 1
 
@@ -282,7 +325,7 @@ def train_loop(epochs=10, device=None):
     end_time = time.time()
 
     # reload the best weights before returning
-    model.load_state_dict(torch.load(SAVE_MODEL_PATH))
+    model.load_state_dict(torch.load(utils.SAVE_MODEL_PATH))
 
     # Plot training vs validation loss curves to visualize convergence
     plt.figure()
@@ -295,8 +338,8 @@ def train_loop(epochs=10, device=None):
     plt.tight_layout()
     plt.show()
 
-    run_dir = create_run_log(
-        base_log_dir=SAVE_LOG_PATH,
+    run_dir = utils.create_run_log(
+        base_log_dir=utils.SAVE_LOG_PATH,
         model=model,
         config={
             "Model": model.__class__.__name__,
@@ -331,7 +374,7 @@ def train_loop(epochs=10, device=None):
 
     temp_path = os.path.join(run_dir, "final_model.pth")
     torch.save(model.state_dict(), temp_path)
-    os.remove(SAVE_MODEL_PATH)
+    os.remove(utils.SAVE_MODEL_PATH)
     print(f"[{FILE_NAME_FOR_LOG}] Final model saved at {temp_path}")
 
     return model
@@ -373,6 +416,16 @@ def test(model, device=None):
 # Main execution
 #================================================
 if __name__ == "__main__":
-    print(f"[{FILE_NAME_FOR_LOG}] Starting training loop...")
-    trained_model = train_loop(epochs=50)
-    accuracy, loss, f1, jaccard_index = test(trained_model)
+    # print(f"[{FILE_NAME_FOR_LOG}] Starting training loop...")
+    # trained_model = train_loop(epochs=50)
+    # accuracy, loss, f1, jaccard_index = test(trained_model)
+    training_df, validation_df, dev_df = get_crop_list(
+        data_path=PATH_DATA_ORIGINAL,
+        mask_path=PATH_MASK_ORIGINAL,
+        window_size=(256, 256),
+        stride=(128, 128),
+        train_val_dev=(0.8, 0.1, 0.1),
+        splitting_mode='safe_split',
+    )
+    print(training_df.head())
+    print(f"Train: {len(training_df)}, Val: {len(validation_df)}, Test: {len(dev_df)}")

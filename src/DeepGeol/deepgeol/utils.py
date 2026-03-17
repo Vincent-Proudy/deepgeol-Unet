@@ -4,7 +4,22 @@ import datetime
 import torch
 import matplotlib.pyplot as plt
 
+#=================================================
+# Constants for simplicty
+#=================================================
+PATH_TRAIN_DEMO = "/lium/buster1/larcher/M2/deep_learning/TP_CNN_UNet/data/training_data.npy"
+PATH_TRAIN_MASKS_DEMO = "/lium/buster1/larcher/M2/deep_learning/TP_CNN_UNet/data/training_masks.npy"
+PATH_TEST_DEMO = "/lium/buster1/larcher/M2/deep_learning/TP_CNN_UNet/data/test_data.npy"
+PATH_TEST_MASKS_DEMO = "/lium/buster1/larcher/M2/deep_learning/TP_CNN_UNet/data/test_masks.npy"
+
+SAVE_LOG_PATH = "log/"
+SAVE_MODEL_PATH = os.path.join(SAVE_LOG_PATH, "best_model.pth")
+
 FILE_NAME_FOR_LOG = os.path.basename(__file__)
+
+# ================================================
+# Utility functions for logging and model summary
+# ================================================
 
 def get_model_summary(model):
     total_params = sum(p.numel() for p in model.parameters())

@@ -28,6 +28,7 @@ __email__ = "anthony.larcher@univ-lemans.fr"
 __status__ = "Production"
 __docformat__ = "reS"
 
+from random import random
 
 import numpy
 import os
