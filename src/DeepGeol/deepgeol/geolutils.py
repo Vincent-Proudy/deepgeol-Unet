@@ -199,16 +199,22 @@ def get_crop_list(data_path,
     # Get the list of images, for each of them, check that the corresponding mask is available and that dimensions are similar
     file_list = [f for f in os.listdir(data_path) if f.endswith('.tif')]
     for filename in file_list:
-        # Open the source image corresponding and get the dimension
-        with rasterio.open(os.path.join(data_path, filename)) as src:
-                im_height = src.height
-                im_width = src.width
+        # Convert image name to mask name: '26_15_10m_v4.1_dem.tif' → 'dem_26_15.tif'
+        parts = filename.split('_')
+        mask_filename = f"dem_{parts[0]}_{parts[1]}.tif"
+        mask_fullpath = os.path.join(mask_path, mask_filename)
 
-        # Open the source mask corresponding and read only a window
-        mask_filename = f"dem_{filename.split('_')[0]}_{filename.split('_')[1]}.tif"
-        with rasterio.open(os.path.join(mask_path, mask_filename)) as src:
-                mask_height = src.height
-                mask_width = src.width
+        # Skip images that have no corresponding mask
+        if not os.path.exists(mask_fullpath):
+            continue
+
+        with rasterio.open(os.path.join(data_path, filename)) as src:
+            im_height = src.height
+            im_width = src.width
+
+        with rasterio.open(mask_fullpath) as src:
+            mask_height = src.height
+            mask_width = src.width
 
         if im_height == mask_height and im_width == mask_width:
             raw_images_list.append((filename, im_height, im_width))
@@ -330,7 +336,9 @@ class GeoSet(Dataset):
             window = torch.from_numpy(window)[None, ...]
 
         # Open the source mask corresponding and read only a window
-        with rasterio.open(os.path.join(self.mask_path, filename)) as src:
+        parts = filename.split('_')
+        mask_filename = f"dem_{parts[0]}_{parts[1]}.tif"
+        with rasterio.open(os.path.join(self.mask_path, mask_filename)) as src:
             mask = src.read(1, window=Window(x_origin, y_origin, self.window_size, self.window_size))
             mask = clean_mask(mask)
             mask = torch.from_numpy(mask)[None, ...]
