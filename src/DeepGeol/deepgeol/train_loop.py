@@ -19,6 +19,9 @@ import tqdm
 from torch.amp import GradScaler, autocast
 import os
 import time
+import sys
+
+sys.path.append("../../DeepGeol/")
 
 from DeepGeol.deepgeol.unet import UNet
 from DeepGeol.deepgeol.utils as utils
