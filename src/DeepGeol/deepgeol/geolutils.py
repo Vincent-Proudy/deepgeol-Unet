@@ -198,28 +198,31 @@ def get_crop_list(data_path,
 
     # Get the list of images, for each of them, check that the corresponding mask is available and that dimensions are similar
     file_list = [f for f in os.listdir(data_path) if f.endswith('.tif')]
+    print(f"Images trouvées : {len(file_list)}")
+
     for filename in file_list:
-        # Convert image name to mask name: '26_15_10m_v4.1_dem.tif' → 'dem_26_15.tif'
-        parts = filename.split('_')
-        mask_filename = f"dem_{parts[0]}_{parts[1]}.tif"
-        mask_fullpath = os.path.join(mask_path, mask_filename)
+    	parts         = filename.split('_')
+    	mask_filename = f"dem_{parts[0]}_{parts[1]}.tif"
+    	mask_fullpath = os.path.join(mask_path, mask_filename)
 
-        # Skip images that have no corresponding mask
-        if not os.path.exists(mask_fullpath):
-            continue
+    	if not os.path.exists(mask_fullpath):
+        	continue
 
-        with rasterio.open(os.path.join(data_path, filename)) as src:
-            im_height = src.height
-            im_width = src.width
+    	with rasterio.open(os.path.join(data_path, filename)) as src:
+        	im_height = src.height
+        	im_width  = src.width
 
-        with rasterio.open(mask_fullpath) as src:
-            mask_height = src.height
-            mask_width = src.width
+    	with rasterio.open(mask_fullpath) as src:
+        	mask_height = src.height
+        	mask_width  = src.width
 
-        if im_height == mask_height and im_width == mask_width:
-            raw_images_list.append((filename, im_height, im_width))
-        else:
-            problem_images.append(filename)
+    	print(f"{filename} → {mask_filename} | image: {im_height}×{im_width} | masque: {mask_height}×{mask_width}")
+
+    	if im_height == mask_height and im_width == mask_width:
+        	raw_images_list.append((filename, im_height, im_width))
+    	else:
+        	problem_images.append(filename)
+        	print(f"  !! dimensions différentes, ignoré")
 
     """
     For Default mode, divide each image in sub-windows and store the information in a DataFrame
