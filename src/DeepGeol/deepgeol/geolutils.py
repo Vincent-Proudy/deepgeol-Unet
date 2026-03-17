@@ -205,7 +205,8 @@ def get_crop_list(data_path,
                 im_width = src.width
 
         # Open the source mask corresponding and read only a window
-        with rasterio.open(os.path.join(mask_path, filename)) as src:
+        mask_filename = f"dem_{filename.split('_')[0]}_{filename.split('_')[1]}.tif"
+        with rasterio.open(os.path.join(mask_path, mask_filename)) as src:
                 mask_height = src.height
                 mask_width = src.width
 

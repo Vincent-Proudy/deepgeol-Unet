@@ -24,8 +24,8 @@ import sys
 sys.path.append("../../DeepGeol/")
 
 from DeepGeol.deepgeol.unet import UNet
-import DeepGeol.deepgeol.utils as utils
-from DeepGeol.deepgeol.geolutils import GeoSet, get_crop_list
+from DeepGeol.deepgeol.utils as utils
+from DeepGeol.deepgeol.geoutil import GeoSet, get_crop_list
 
 #================================================
 # Constants for simplicty
