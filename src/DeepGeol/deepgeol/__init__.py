@@ -1,4 +1,4 @@
-  # coding: utf-8 -*-
+# coding: utf-8 -*-
 #
 # This file is part of DeepGeol.
 #
@@ -33,8 +33,8 @@ from .unet_parts import DoubleConv
 from .unet_parts import Down2C
 from .unet_parts import Up2C
 from .unet_parts import OutConv
-from .utils import ASPP
+from .unet_parts import ASPP
 from .unet import UNet
-
+from .geolutils import GeoSet, get_crop_list
 from .utils import create_run_log
 
