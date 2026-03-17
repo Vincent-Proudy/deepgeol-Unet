@@ -33,7 +33,7 @@ from .unet_parts import DoubleConv
 from .unet_parts import Down2C
 from .unet_parts import Up2C
 from .unet_parts import OutConv
-from .unet import ASPP
+from .utils import ASPP
 from .unet import UNet
 
 from .utils import create_run_log
