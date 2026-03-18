@@ -71,7 +71,6 @@ class UNet(torch.nn.Module):
         self.innput_conv = None
         self.attention = attention
 
-        # We use a DoubleConv block before going down
         self.inc = DoubleConv(input_channels, hidden_channels[0], dropout=dropout, batch_norm=batch_norm)
 
         # Encoder (Down)
@@ -87,7 +86,7 @@ class UNet(torch.nn.Module):
         self.aspp = ASPP(in_channels=hidden_channels[4], mid_channels=hidden_channels[4])
 
         # Decoder (Up)
-        # On passe (Input venant du bas, Input venant du skip/Sortie voulue)
+        # On passe (Input venant du bas, Input venant du skip/Sortie)
 
         # up0 prend down3 (1024) et skip down2 (512)
         self.up0 = Up2C(hidden_channels[4], hidden_channels[3], bilinear=bilinear, attention=attention)
@@ -102,6 +101,9 @@ class UNet(torch.nn.Module):
         self.up3 = Up2C(hidden_channels[1], hidden_channels[0], bilinear=bilinear, attention=attention)
 
         self.outc = OutConv(hidden_channels[0], n_classes)
+
+        # J'ai mis en commentaires car dans ma boucle d'apprentissage
+        # j'utilise la fonction de loss BCEWithLogitsLoss qui applique une sigmoid à la sortie du réseau
         # self.sigmoid = torch.nn.Sigmoid()
 
 
@@ -115,9 +117,9 @@ class UNet(torch.nn.Module):
         down_outputs.append(self.down2(down_outputs[-1]))
         down_outputs.append(self.down3(down_outputs[-1]))
 
-        # Apply ASPP on the bottleneck
+        # On applique notre module de contextualisation ASPP sur la sortie du dernier bloc de down
+        # C'est le bottleneck du U-Net
         down_outputs[-1] = self.aspp(down_outputs[-1])
-
         x = self.up0(down_outputs[-1], down_outputs[-2])
         x = self.up1(x, down_outputs[-3])
         x = self.up2(x, down_outputs[-4])
@@ -128,10 +130,10 @@ class UNet(torch.nn.Module):
         # out = self.sigmoid(logits)
         return out
 
-def test_unet():
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"Device: {device}")
-    model = UNet().to(device)
-    x = torch.randn(1, 1, 256, 256).to(device)  # Batch size of 1, 1 input channel, and spatial dimensions of 572x572
-    output = model(x)
-    print(f"Output shape: {output.shape}")  # Should be (1, n_classes, H_out, W_out)
+# def test_unet():
+#     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+#     print(f"Device: {device}")
+#     model = UNet().to(device)
+#     x = torch.randn(1, 1, 256, 256).to(device)  # Batch size of 1, 1 input channel, and spatial dimensions of 572x572
+#     output = model(x)
+#     print(f"Output shape: {output.shape}")  # Should be (1, n_classes, H_out, W_out)

@@ -35,6 +35,6 @@ from .unet_parts import Up2C
 from .unet_parts import OutConv
 from .unet_parts import ASPP
 from .unet import UNet
-from .geolutils import GeoSet, get_crop_list
+# from .geolutils import GeoSet, get_crop_list
 from .utils import create_run_log
 

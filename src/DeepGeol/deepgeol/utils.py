@@ -5,7 +5,7 @@ import torch
 import matplotlib.pyplot as plt
 
 #=================================================
-# Constants for simplicty
+# Les constantes
 #=================================================
 PATH_TRAIN_DEMO = "/lium/buster1/larcher/M2/deep_learning/TP_CNN_UNet/data/training_data.npy"
 PATH_TRAIN_MASKS_DEMO = "/lium/buster1/larcher/M2/deep_learning/TP_CNN_UNet/data/training_masks.npy"
@@ -18,18 +18,21 @@ SAVE_MODEL_PATH = os.path.join(SAVE_LOG_PATH, "best_model.pth")
 FILE_NAME_FOR_LOG = os.path.basename(__file__)
 
 # ================================================
-# Utility functions for logging and model summary
+# Fonctions pour les logs des runs
 # ================================================
 
 def get_model_summary(model):
+    # Compter le nombre de paramètres du réseau
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
 
-    # List all named blocks (one level deep — skips individual weights)
+    # Récupérer les types de blocs utilisés dans le réseau
     blocks = {}
     for name, module in model.named_children():
         blocks[name] = module.__class__.__name__
 
+    # Rassembler les informations dans un dictionnaire pour ensuite
+    # le mettre dans un json
     return {
         "class": model.__class__.__name__,
         "hidden_channels": model.hidden_channels,
@@ -46,10 +49,12 @@ def get_model_summary(model):
 
 
 def get_environment_info():
+    # Récupérer les informations sur l'environnement d'exécution
     env = {
         "pytorch_version": torch.__version__,
         "cuda_available": torch.cuda.is_available(),
     }
+    # Si CUDA est dispo, ajouter les détails du GPU
     if torch.cuda.is_available():
         env["gpu_name"] = torch.cuda.get_device_name(0)
         env["cuda_version"] = torch.version.cuda
@@ -58,26 +63,30 @@ def get_environment_info():
 
 
 def create_run_log(base_log_dir, model, config, results, training_loss, validation_loss, run_duration):
+    # Créer un dossier de log avec la date et l'heure du run
     now = datetime.datetime.now()
     date_str = now.strftime("%Y-%m-%d")
     time_str = now.strftime("%H-%M-%S")
-
-    # Create dated + timestamped directory
     run_dir = os.path.join(base_log_dir, date_str, time_str)
     os.makedirs(run_dir, exist_ok=True)
 
+    # Un fichier json pour les infos du run et un fichier image
+    # pour le plot de la courbe de loss
     json_path = os.path.join(run_dir, f"{time_str}.json")
     plot_path = os.path.join(run_dir, f"{time_str}_loss.png")
 
+    # Création de section dans le json pour les infos du modèle, de la config,
+    # des résultats et de l'environnement
     record = {
         "model": get_model_summary(model),
         "config": config,
         "results": results,
         "environment": get_environment_info(),
     }
-
+    # On ajoute le temps de calcul
     results["training_time_seconds"] = run_duration
 
+    # sauver le json et le plot de la courbe de loss
     with open(json_path, "w") as f:
         json.dump(record, f, indent=2, default=str)
 

@@ -1,0 +1,73 @@
+{
+  "model": {
+    "class": "UNet",
+    "hidden_channels": [
+      32,
+      64,
+      128,
+      256,
+      512
+    ],
+    "input_channels": 1,
+    "n_classes": 1,
+    "bilinear": false,
+    "batch_norm": true,
+    "dropout": false,
+    "attention": true,
+    "total_params": 16768345,
+    "trainable_params": 16768345,
+    "blocks": {
+      "inc": "DoubleConv",
+      "down0": "Down2C",
+      "down1": "Down2C",
+      "down2": "Down2C",
+      "down3": "Down2C",
+      "aspp": "ASPP",
+      "up0": "Up2C",
+      "up1": "Up2C",
+      "up2": "Up2C",
+      "up3": "Up2C",
+      "outc": "OutConv"
+    }
+  },
+  "config": {
+    "Model": "UNet",
+    "Hidden channels": [
+      32,
+      64,
+      128,
+      256,
+      512
+    ],
+    "Bilinear": false,
+    "Batch norm": true,
+    "Dropout": false,
+    "Attention": true,
+    "Sigmoid threshold": 0.3,
+    "Epochs": 20,
+    "Batch size": 64,
+    "Train ratio": 0.9,
+    "Optimizer": "Adam",
+    "Scheduler": "None",
+    "Learning rate": 0.0001,
+    "Loss function": "BCEWithLogitsLoss",
+    "pos_weight": 4.0,
+    "Patience": 8
+  },
+  "results": {
+    "Early stopping ": false,
+    "Early stopping epoch": -1,
+    "Best validation loss": 0.13824620842933655,
+    "Best validation acc": 94.9870998576536,
+    "Best validation F1": 0.8346600563672469,
+    "Best validation Jaccard Index": 0.7162374043108257,
+    "training_time_seconds": 246.47589254379272
+  },
+  "environment": {
+    "pytorch_version": "2.6.0+cu124",
+    "cuda_available": true,
+    "gpu_name": "NVIDIA GeForce GTX TITAN X",
+    "cuda_version": "12.4",
+    "vram_total_gb": 11.91
+  }
+}
