@@ -233,7 +233,7 @@ class AttentionGate(nn.Module):
         # On peut pas additionner deux tenseurs de tailles différentes.
         # F.interpolate remonte g1 à la taille de x1 par interpolation bilinéaire
         # size=x1.shape[2:] récupère (H_x, W_x) — les deux dernières dimensions
-        # (B, F_int, 16, 16) → (B, F_int, 32, 32). c'est un peu le meme esprit que dans
+        # (B, F_int, 16, 16) -> (B, F_int, 32, 32). c'est un peu le meme esprit que dans
         # le bloc Up2c
         g1 = F.interpolate(g1, size=x1.shape[2:], mode='bilinear', align_corners=True)
 
@@ -245,8 +245,8 @@ class AttentionGate(nn.Module):
         # pixel de x par son coefficient d'attention alpha, comme ça on donne plus ou moins
         # d'importance à chaque pixel selon le contexte donné par g. Si on veut rapprocher
         # à ça a notre cas :
-        # - un pixel qui a une valeur proche de 1, alors on le conserve car info utile (par ex. faille)
-        # - un pixel qui a une valeur proche de 0, alors on le supprime car pas d'info utile (par ex. roche)
+        # - un pixel qui a une valeur proche de 1, alors on le conserve car info utile (par ex. faille, sédiments)
+        # - un pixel qui a une valeur proche de 0, alors on le supprime car pas d'info utile (par ex. roche basique)
         return x * alpha
 
 class ASPP(nn.Module):
