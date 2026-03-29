@@ -218,7 +218,7 @@ def train_loop(epochs=10, device=None, batch_size=BATCH_SIZE, lr=LR):
     print(f"[{FILE_NAME_FOR_LOG}] Using {'GPU' if device == 'cuda' else 'CPU'} device")
 
     # Nombre d'épochs où la loss de validation ne s'améliore pas afin d'éviter
-    # l'overfitting du réseau
+    # l'overfitting du réseau = early stopping
     patience = 8
 
     dataloader_train, _, dataloader_val = load_data(batch_size=batch_size)
