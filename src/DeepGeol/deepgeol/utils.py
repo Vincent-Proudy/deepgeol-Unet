@@ -1,6 +1,7 @@
 import os
 import json
 import datetime
+import numpy as np
 import torch
 import matplotlib.pyplot as plt
 
@@ -105,3 +106,34 @@ def create_run_log(base_log_dir, model, config, results, training_loss, validati
     print(f"[{FILE_NAME_FOR_LOG}] Plot saved at {plot_path}")
 
     return run_dir
+
+# ================================================
+# Fonctions pour la soutenance
+# ================================================
+def load_data(path_data, path_masks):
+    x = np.load(path_data)
+    y = np.load(path_masks)
+    return x, y
+
+def visualize_image_and_mask(image, mask, idx=0):
+    image = image[idx]
+    mask = mask[idx]
+
+    # (H, W,1) -> (H, W)
+    if mask.ndim == 3 and mask.shape[-1] == 1:
+        mask = mask[:, :, 0]
+
+    plt.figure(figsize=(10, 5))
+
+    plt.subplot(1, 2, 1)
+    plt.imshow(image)
+    plt.title("Original Image")
+    plt.axis("off")
+
+    plt.subplot(1, 2, 2)
+    plt.imshow(mask, cmap="gray")
+    plt.title("Associated Mask")
+    plt.axis("off")
+
+    plt.tight_layout()
+    plt.show()
